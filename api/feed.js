@@ -17,7 +17,8 @@ async function fetchWines() {
     `&product_type=eq.Wine` +
     `&status=eq.active` +
     `&price=gt.0` +
-    `&order=title.asc`;
+    `&order=title.asc` +
+    `&limit=10000`;
 
   const res = await fetch(url, {
     headers: {
