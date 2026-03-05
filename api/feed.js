@@ -38,33 +38,30 @@ function extractVintage(title) {
   return match ? match[0] : "NV";
 }
 
-// ---- Check if product has stock ----
+// ---- Check inventory policy from variants JSONB ----
+// Note: inventory_quantity is not stored in variants JSONB — only inventory_policy.
+// Active products with price > 0 are treated as available (stale/zero-inventory
+// products are archived nightly, so active = in stock is a reliable signal).
 
 function getStock(variants) {
-  if (!variants) return 0;
+  if (!variants) return 1;
   const parsed = typeof variants === "string" ? JSON.parse(variants) : variants;
-  if (!Array.isArray(parsed) || parsed.length === 0) return 0;
-
-  const first = parsed[0];
-  if (first.inventory_policy === "continue") return 99;
-
-  const qty = parsed.reduce((sum, v) => sum + (v.inventory_quantity ?? 0), 0);
-  return qty;
+  if (Array.isArray(parsed) && parsed.length > 0) {
+    if (parsed[0].inventory_policy === "continue") return 99;
+  }
+  return 1; // active + price > 0 means available
 }
 
 // ---- Map row → Wine-Searcher record ----
 
 function toRecord(row) {
-  const stock = getStock(row.variants);
-  if (stock <= 0) return null;
-
   return {
     sku:       row.sku || row.handle,
     name:      row.title,
     vintage:   extractVintage(row.title),
     unit_size: "750ml",
     price:     parseFloat(row.price).toFixed(2),
-    stock:     Math.min(stock, 99),
+    stock:     getStock(row.variants),
     url:       `https://${DOMAIN}/products/${row.handle}`,
     ...(row.image_url ? { image_url: row.image_url } : {}),
   };
