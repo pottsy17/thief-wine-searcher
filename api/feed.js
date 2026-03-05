@@ -12,24 +12,37 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // ---- Supabase REST query — no SDK needed ----
 
 async function fetchWines() {
-  const url = `${SUPABASE_URL}/rest/v1/shopify_products` +
+  const base = `${SUPABASE_URL}/rest/v1/shopify_products` +
     `?select=title,handle,sku,price,image_url,variants` +
     `&product_type=eq.Wine` +
     `&status=eq.active` +
     `&price=gt.0` +
     `&order=title.asc`;
 
-  const res = await fetch(url, {
-    headers: {
-      "apikey":        SUPABASE_KEY,
-      "Authorization": `Bearer ${SUPABASE_KEY}`,
-      "Accept":        "application/json",
-      "Range":         "0-9999",
-    },
-  });
+  const all = [];
+  const PAGE = 1000;
+  let offset = 0;
 
-  if (!res.ok) throw new Error(`Supabase query failed: ${res.status}`);
-  return res.json();
+  while (true) {
+    const res = await fetch(`${base}&limit=${PAGE}&offset=${offset}`, {
+      headers: {
+        "apikey":        SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Accept":        "application/json",
+        "Range-Unit":    "items",
+        "Range":         `${offset}-${offset + PAGE - 1}`,
+        "Prefer":        "count=none",
+      },
+    });
+
+    if (!res.ok) throw new Error(`Supabase query failed: ${res.status}`);
+    const page = await res.json();
+    all.push(...page);
+    if (page.length < PAGE) break;
+    offset += PAGE;
+  }
+
+  return all;
 }
 
 // ---- Extract 4-digit vintage year from title ----
