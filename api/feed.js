@@ -17,14 +17,14 @@ async function fetchWines() {
     `&product_type=eq.Wine` +
     `&status=eq.active` +
     `&price=gt.0` +
-    `&order=title.asc` +
-    `&limit=10000`;
+    `&order=title.asc`;
 
   const res = await fetch(url, {
     headers: {
       "apikey":        SUPABASE_KEY,
       "Authorization": `Bearer ${SUPABASE_KEY}`,
       "Accept":        "application/json",
+      "Range":         "0-9999",
     },
   });
 
