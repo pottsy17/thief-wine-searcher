@@ -1,0 +1,6 @@
+{
+  "name": "thief-wine-searcher-feed",
+  "version": "1.0.0",
+  "description": "Wine-Searcher JSON data feed for Thief Fine Wine & Beer",
+  "engines": { "node": ">=18" }
+}
