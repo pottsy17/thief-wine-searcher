@@ -1,89 +1,34 @@
 // Thief Fine Wine & Beer — Wine-Searcher JSON Data Feed
-// Deployed on Vercel. Queries Shopify GraphQL directly for live data.
+// Deployed on Vercel. Queries Supabase for near-instant response.
 // Wine-Searcher crawls this endpoint up to 5x/day.
 //
-// Feed URL (once deployed): https://thief-wine-searcher.vercel.app/api/feed
-// Submit that URL to Wine-Searcher at: https://www.wine-searcher.com/trade/list-on-wine-searcher
+// Feed URL: https://thief-wine-searcher.vercel.app/api/feed
+// Submit to Wine-Searcher at: https://www.wine-searcher.com/trade/list-on-wine-searcher
 
-const STORE    = process.env.SHOPIFY_STORE_HANDLE + ".myshopify.com";
-const DOMAIN   = process.env.STORE_DOMAIN || "thiefshop.com";
-const GQL      = `https://${STORE}/admin/api/2025-01/graphql.json`;
+const DOMAIN       = process.env.STORE_DOMAIN || "thiefshop.com";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// ---- Shopify Auth (client credentials — same pattern as all Thief tools) ----
+// ---- Supabase REST query — no SDK needed ----
 
-async function getToken() {
-  const res = await fetch(`https://${STORE}/admin/oauth/access_token`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type:    "client_credentials",
-      client_id:     process.env.SHOPIFY_CLIENT_ID,
-      client_secret: process.env.SHOPIFY_CLIENT_SECRET,
-    }),
+async function fetchWines() {
+  const url = `${SUPABASE_URL}/rest/v1/shopify_products` +
+    `?select=title,handle,sku,price,image_url,variants` +
+    `&product_type=eq.Wine` +
+    `&status=eq.active` +
+    `&price=gt.0` +
+    `&order=title.asc`;
+
+  const res = await fetch(url, {
+    headers: {
+      "apikey":        SUPABASE_KEY,
+      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Accept":        "application/json",
+    },
   });
-  const data = await res.json();
-  if (!data.access_token) throw new Error("Shopify auth failed");
-  return data.access_token;
-}
 
-// ---- GraphQL query — paginate through all active Wine products ----
-
-const PRODUCTS_QUERY = `
-  query getProducts($cursor: String) {
-    products(
-      first: 250
-      after: $cursor
-      query: "product_type:Wine AND status:active"
-    ) {
-      pageInfo { hasNextPage endCursor }
-      edges {
-        node {
-          id
-          title
-          handle
-          vendor
-          images(first: 1) { edges { node { url } } }
-          variants(first: 1) {
-            edges {
-              node {
-                sku
-                price
-                inventoryQuantity
-                inventoryPolicy
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-async function fetchAllWines(token) {
-  const products = [];
-  let cursor = null;
-
-  while (true) {
-    const res = await fetch(GQL, {
-      method:  "POST",
-      headers: {
-        "Content-Type":           "application/json",
-        "X-Shopify-Access-Token": token,
-      },
-      body: JSON.stringify({ query: PRODUCTS_QUERY, variables: { cursor } }),
-    });
-
-    const json = await res.json();
-    if (json.errors) throw new Error(JSON.stringify(json.errors));
-
-    const page = json.data.products;
-    products.push(...page.edges.map(e => e.node));
-
-    if (!page.pageInfo.hasNextPage) break;
-    cursor = page.pageInfo.endCursor;
-  }
-
-  return products;
+  if (!res.ok) throw new Error(`Supabase query failed: ${res.status}`);
+  return res.json();
 }
 
 // ---- Extract 4-digit vintage year from title ----
@@ -93,64 +38,55 @@ function extractVintage(title) {
   return match ? match[0] : "NV";
 }
 
-// ---- Map Shopify product → Wine-Searcher record ----
+// ---- Check if product has stock ----
 
-function toWineSearcherRecord(product) {
-  const variant = product.variants.edges[0]?.node;
-  if (!variant) return null;
+function getStock(variants) {
+  if (!variants) return 0;
+  const parsed = typeof variants === "string" ? JSON.parse(variants) : variants;
+  if (!Array.isArray(parsed) || parsed.length === 0) return 0;
 
-  const price = parseFloat(variant.price);
-  if (!price || price <= 0) return null;
+  const first = parsed[0];
+  if (first.inventory_policy === "continue") return 99;
 
-  // Include if: continuous inventory policy (always available)
-  // OR if inventory quantity > 0
-  const inStock =
-    variant.inventoryPolicy === "continue" ||
-    (variant.inventoryQuantity != null && variant.inventoryQuantity > 0);
+  const qty = parsed.reduce((sum, v) => sum + (v.inventory_quantity ?? 0), 0);
+  return qty;
+}
 
-  if (!inStock) return null;
+// ---- Map row → Wine-Searcher record ----
 
-  const stock = variant.inventoryPolicy === "continue"
-    ? 99  // "continue selling when out of stock" — treat as always available
-    : Math.max(1, variant.inventoryQuantity);
-
-  const imageUrl = product.images.edges[0]?.node?.url || null;
+function toRecord(row) {
+  const stock = getStock(row.variants);
+  if (stock <= 0) return null;
 
   return {
-    sku:       variant.sku || product.id.replace("gid://shopify/Product/", ""),
-    name:      product.title,
-    vintage:   extractVintage(product.title),
+    sku:       row.sku || row.handle,
+    name:      row.title,
+    vintage:   extractVintage(row.title),
     unit_size: "750ml",
-    price:     price.toFixed(2),
-    stock,
-    url:       `https://${DOMAIN}/products/${product.handle}`,
-    ...(imageUrl ? { image_url: imageUrl } : {}),
+    price:     parseFloat(row.price).toFixed(2),
+    stock:     Math.min(stock, 99),
+    url:       `https://${DOMAIN}/products/${row.handle}`,
+    ...(row.image_url ? { image_url: row.image_url } : {}),
   };
 }
 
 // ---- Vercel handler ----
 
 export default async function handler(req, res) {
-  // Cache for 4 hours — Wine-Searcher crawls up to 5x/day, this keeps us responsive
-  // without hammering Shopify on every crawl
   res.setHeader("Cache-Control", "public, s-maxage=14400, stale-while-revalidate=3600");
   res.setHeader("Content-Type", "application/json");
 
   try {
-    const token    = await getToken();
-    const products = await fetchAllWines(token);
-
-    const records = products
-      .map(toWineSearcherRecord)
-      .filter(Boolean);
+    const rows    = await fetchWines();
+    const records = rows.map(toRecord).filter(Boolean);
 
     res.status(200).json({
-      store:      "Thief Fine Wine & Beer",
-      location:   "Walla Walla, WA",
-      currency:   "USD",
-      generated:  new Date().toISOString(),
-      count:      records.length,
-      products:   records,
+      store:     "Thief Fine Wine & Beer",
+      location:  "Walla Walla, WA",
+      currency:  "USD",
+      generated: new Date().toISOString(),
+      count:     records.length,
+      products:  records,
     });
   } catch (err) {
     console.error("Feed error:", err.message);
